@@ -1,0 +1,68 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: [ main ] # 当你推送到 main 分支时触发
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Build for Apple Silicon (M1/M2)
+        run: |
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o 安全助手_arm main.go
+
+      - name: Build for Intel
+        run: |
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o 安全助手_intel main.go
+
+      - name: Create Universal Binary
+        run: |
+          lipo -create -output 安全助手 安全助手_arm 安全助手_intel
+
+      - name: Package as .app
+        run: |
+          mkdir -p "安全助手.app/Contents/MacOS"
+          mkdir -p "安全助手.app/Contents/Resources"
+          cp 安全助手 "安全助手.app/Contents/MacOS/"
+          cp icon.ico "安全助手.app/Contents/Resources/"
+          
+          # 生成 Info.plist
+          cat <<EOF > "安全助手.app/Contents/Info.plist"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>安全助手</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.swueecg.assistant</string>
+              <key>CFBundleName</key>
+              <string>安全助手</string>
+              <key>CFBundleVersion</key>
+              <string>1.0</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>10.13</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Zip the App
+        run: |
+          zip -r 安全助手_Mac版.zip "安全助手.app"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: Mac-Installer
+          path: 安全助手_Mac版.zip

@@ -1,0 +1,257 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	_ "embed" // 必须引入 embed 包用于打包 ico
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os/exec"
+	"runtime"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/getlantern/systray"
+)
+
+// 允许的前端域名
+// 生产环境请替换为: https://xjssjb.dscq.com
+const AllowedOrigin = "http://192.168.2.188:5173"
+
+// 你的 Java 后端接口 (测试时替换为你真实的 Java 接口)
+const JavaBackendURL = "http://127.0.0.1:8085/api/warning/hardware/report"
+
+//go:embed icon.ico
+var iconData []byte
+
+type HardwareData struct {
+	MacAddresses []string `json:"mac_addresses"`
+	CPUID        string   `json:"cpu_id"`
+	BoardSerial  string   `json:"board_serial"`
+	DiskSerials  []string `json:"disk_serials"`
+	InnerIP      string   `json:"inner_ip"`
+	OuterIP      string   `json:"outer_ip"`
+}
+
+type ReportRequest struct {
+	ProjectID  string       `json:"projectId"`
+	SupplierID string       `json:"supplierId"`
+	Hardware   HardwareData `json:"hardware"`
+}
+
+func hashString(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	h := sha256.New()
+	h.Write([]byte(s))
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// runCmd 执行系统命令，并隐藏弹出的黑框
+func runCmd(name string, args ...string) string {
+	cmd := exec.Command(name, args...)
+	
+	// 设置 SysProcAttr，隐藏 cmd 黑框
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func getInnerIP() string {
+	addrs, _ := net.InterfaceAddrs()
+	for _, address := range addrs {
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	return ""
+}
+
+func getOuterIP() string {
+	client := http.Client{Timeout: 3 * time.Second}
+	// 方案一：淘宝接口（国内非常稳定）
+	resp, err := client.Get("https://www.taobao.com/help/getip.php")
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		str := string(body)
+		// 返回值格式: ipCallback({ip:"1.2.3.4"})
+		if strings.Contains(str, "ip:") {
+			start := strings.Index(str, "ip:") + 4
+			end := strings.Index(str[start:], "\"")
+			if end > 0 {
+				return str[start : start+end]
+			}
+		}
+	}
+
+	// 方案二：备用接口（ipify）
+	resp2, err2 := client.Get("https://api.ipify.org?format=text")
+	if err2 == nil && resp2.StatusCode == http.StatusOK {
+		defer resp2.Body.Close()
+		body, _ := io.ReadAll(resp2.Body)
+		return string(body)
+	}
+	
+	return ""
+}
+
+func collectHardware() HardwareData {
+	data := HardwareData{MacAddresses: []string{}, DiskSerials: []string{}}
+	data.InnerIP = getInnerIP()
+	data.OuterIP = getOuterIP()
+
+	if runtime.GOOS == "windows" {
+		macOut := runCmd("cmd", "/c", "getmac /fo csv /nh")
+		lines := strings.Split(macOut, "\n")
+		for _, line := range lines {
+			parts := strings.Split(line, ",")
+			if len(parts) > 0 {
+				mac := strings.Trim(parts[0], "\" \r\n")
+				if strings.Contains(mac, "-") {
+					data.MacAddresses = append(data.MacAddresses, hashString(mac))
+					break
+				}
+			}
+		}
+		cpuOut := runCmd("cmd", "/c", "wmic cpu get ProcessorId")
+		cpuLines := strings.Split(cpuOut, "\n")
+		if len(cpuLines) > 1 {
+			data.CPUID = hashString(cpuLines[1])
+		}
+		boardOut := runCmd("cmd", "/c", "wmic baseboard get SerialNumber")
+		boardLines := strings.Split(boardOut, "\n")
+		if len(boardLines) > 1 {
+			data.BoardSerial = hashString(boardLines[1])
+		}
+		diskOut := runCmd("cmd", "/c", "wmic diskdrive get SerialNumber")
+		diskLines := strings.Split(diskOut, "\n")
+		for i, line := range diskLines {
+			if i > 0 && strings.TrimSpace(line) != "" && !strings.Contains(line, "SerialNumber") {
+				data.DiskSerials = append(data.DiskSerials, hashString(line))
+			}
+		}
+	}
+	return data
+}
+
+// 处理跨域
+func setupCORS(w http.ResponseWriter, r *http.Request) bool {
+	w.Header().Set("Access-Control-Allow-Origin", AllowedOrigin)
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return true
+	}
+	return false
+}
+
+// 独立的 HTTP 服务器启动函数
+func startServer() {
+	mux := http.NewServeMux()
+
+	// 探活接口
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		if setupCORS(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	// 采集接口
+	mux.HandleFunc("/collect", func(w http.ResponseWriter, r *http.Request) {
+		if setupCORS(w, r) {
+			return
+		}
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// 1. 解析前端传来的项目信息
+		var req ReportRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		// 2. 执行硬件采集
+		req.Hardware = collectHardware()
+
+		// 3. 转发数据给 Java 后端
+		jsonData, _ := json.Marshal(req)
+		resp, err := http.Post(JavaBackendURL, "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			http.Error(w, "无法连接至后端系统", http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+
+		// 4. 组装并返回响应给 Vue 前端（包含 hardware 用于回显）
+		w.Header().Set("Content-Type", "application/json")
+		response := map[string]interface{}{
+			"status":   "success",
+			"message":  "数据已记录",
+			"hardware": req.Hardware, // 把采集到的数据返回给前端
+		}
+		json.NewEncoder(w).Encode(response)
+	})
+
+	// 启动服务，如果端口被占用会阻塞在这里
+	err := http.ListenAndServe("127.0.0.1:38080", mux)
+	if err != nil {
+		// 如果启动失败，直接退出程序
+		panic(err)
+	}
+}
+
+// 托盘程序入口
+func main() {
+	// 在后台协程中启动 HTTP 服务
+	go startServer()
+
+	// 启动托盘图标 (阻塞主线程)
+	systray.Run(onReady, onExit)
+}
+
+// 托盘启动时的回调
+func onReady() {
+	systray.SetIcon(iconData)
+	systray.SetTitle("安全助手") // 鼠标悬停时显示的提示
+	systray.SetTooltip("开评标硬件环境采集助手正在运行")
+
+	// 添加一个菜单项（不可点击，仅作展示）
+	mStatus := systray.AddMenuItem("运行状态: 正常", "本地服务 127.0.0.1:38080")
+	mStatus.Disable()
+
+	systray.AddSeparator()
+
+	// 添加退出按钮
+	mQuit := systray.AddMenuItem("退出安全助手", "关闭采集服务并退出")
+
+	// 监听退出按钮点击事件
+	go func() {
+		<-mQuit.ClickedCh
+		systray.Quit()
+	}()
+}
+
+// 托盘退出时的回调
+func onExit() {
+	// 可以在这里做一些清理工作
+}
