@@ -120,7 +120,7 @@ func collectHardware() HardwareData {
 			if len(parts) > 0 {
 				mac := strings.Trim(parts[0], "\" \r\n")
 				if strings.Contains(mac, "-") {
-					data.MacAddresses = append(data.MacAddresses, hashString(mac))
+					data.MacAddresses = append(data.MacAddresses, (mac))
 					break
 				}
 			}
@@ -129,13 +129,13 @@ func collectHardware() HardwareData {
 		cpuOut := runCmd("powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).ProcessorId")
 		cpuOut = strings.TrimSpace(cpuOut)
 		if cpuOut != "" && !strings.Contains(cpuOut, "错误") {
-			data.CPUID = hashString(cpuOut)
+			data.CPUID = (cpuOut)
 		}
 		// 3. 主板序列号
 		boardOut := runCmd("powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_BaseBoard).SerialNumber")
 		boardOut = strings.TrimSpace(boardOut)
 		if boardOut != "" && !strings.Contains(boardOut, "错误") && boardOut != "To be filled by O.E.M." {
-			data.BoardSerial = hashString(boardOut)
+			data.BoardSerial = (boardOut)
 		}
 		// 4. 硬盘序列号
 		diskOut := runCmd("powershell", "-NoProfile", "-Command", "Get-PhysicalDisk | Select-Object -ExpandProperty SerialNumber")
@@ -143,7 +143,7 @@ func collectHardware() HardwareData {
 		for _, line := range diskLines {
 			serial := strings.TrimSpace(line)
 			if serial != "" && !strings.Contains(serial, "错误") {
-				data.DiskSerials = append(data.DiskSerials, hashString(serial))
+				data.DiskSerials = append(data.DiskSerials, (serial))
 			}
 		}
 
@@ -154,7 +154,7 @@ func collectHardware() HardwareData {
 		if strings.Contains(macOut, "ether") {
 			parts := strings.Fields(macOut)
 			if len(parts) >= 2 {
-				data.MacAddresses = append(data.MacAddresses, hashString(parts[1]))
+				data.MacAddresses = append(data.MacAddresses, (parts[1]))
 			}
 		}
 
@@ -162,14 +162,14 @@ func collectHardware() HardwareData {
 		cpuOut := runCmd("sh", "-c", "sysctl -n machdep.cpu.brand_string")
 		cpuOut = strings.TrimSpace(cpuOut)
 		if cpuOut != "" {
-			data.CPUID = hashString(cpuOut)
+			data.CPUID = (cpuOut)
 		}
 
 		// 3. 主板/整机序列号 (Mac 的硬件唯一标识通常在 Hardware UUID 中)
 		boardOut := runCmd("sh", "-c", "ioreg -rd1 -c IOPlatformExpertDevice | awk '/IOPlatformUUID/ { print $3 }'")
 		boardOut = strings.Trim(boardOut, "\"\n\r ")
 		if boardOut != "" {
-			data.BoardSerial = hashString(boardOut)
+			data.BoardSerial = (boardOut)
 		}
 
 		// 4. 硬盘序列号
@@ -178,7 +178,7 @@ func collectHardware() HardwareData {
 		for _, line := range diskLines {
 			serial := strings.TrimSpace(line)
 			if serial != "" && serial != "N/A" {
-				data.DiskSerials = append(data.DiskSerials, hashString(serial))
+				data.DiskSerials = append(data.DiskSerials, (serial))
 			}
 		}
 	}
