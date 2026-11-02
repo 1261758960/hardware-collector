@@ -53,8 +53,8 @@ func hashString(s string) string {
 func runCmd(name string, args ...string) string {
 	cmd := exec.Command(name, args...)
 
-	// 调用我们自定义的跨平台隐藏黑框函数
-	hideCmdWindow(cmd) 
+	// 调用我们自定义的跨平台隐藏黑框函数 (在 hide_windows.go 和 hide_unix.go 中实现)
+	hideCmdWindow(cmd)
 
 	out, err := cmd.Output()
 	if err != nil {
@@ -173,7 +173,7 @@ func collectHardware() HardwareData {
 		}
 
 		// 4. 硬盘序列号
-		diskOut := runCmd("sh", "-c", "system_profiler SPNVMeDataType SPStorageDataType | grep 'Serial Number' | awk -F: '{print $2}'")
+		diskOut := runCmd("sh", "-c", "diskutil info / | grep 'Volume UUID' | awk -F: '{print $2}'")
 		diskLines := strings.Split(diskOut, "\n")
 		for _, line := range diskLines {
 			serial := strings.TrimSpace(line)
@@ -232,7 +232,7 @@ func startServer() {
 		// 2. 执行硬件采集
 		req.Hardware = collectHardware()
 
-		// 3. 【改造点】去除了转发给 Java 后端的逻辑，直接组装数据返回给 Vue 前端
+		// 3. 去除了转发给 Java 后端的逻辑，直接组装数据返回给 Vue 前端
 		w.Header().Set("Content-Type", "application/json")
 		response := map[string]interface{}{
 			"status":   "success",
@@ -251,7 +251,6 @@ func startServer() {
 }
 
 // 托盘程序入口
-
 func main() {
 	// 在后台协程中启动 HTTP 服务
 	go startServer()
@@ -263,26 +262,45 @@ func main() {
 // 托盘启动时的回调
 func onReady() {
 	systray.SetIcon(iconData)
-	systray.SetTitle("安全助手") // 鼠标悬停时显示的提示
+	systray.SetTitle("安全助手")
 	systray.SetTooltip("开评标硬件环境采集助手正在运行")
 
-	// 添加一个菜单项（不可点击，仅作展示）
+	// 菜单项
 	mStatus := systray.AddMenuItem("运行状态: 正常", "本地服务 127.0.0.1:38080")
 	mStatus.Disable()
-
 	systray.AddSeparator()
-
-	// 添加退出按钮
 	mQuit := systray.AddMenuItem("退出安全助手", "关闭采集服务并退出")
 
-	// 监听退出按钮点击事件
+	// 监听退出按钮
 	go func() {
 		<-mQuit.ClickedCh
 		systray.Quit()
 	}()
+
+	// 【新增】在后台弹出一个系统级的通知提示
+	go showStartupNotification()
 }
 
 // 托盘退出时的回调
 func onExit() {
 	// 可以在这里做一些清理工作
+}
+
+// 【新增】展示启动成功的系统通知
+// 【新增】展示启动成功的系统通知（改用弹窗，保证100%可见）
+func showStartupNotification() {
+	// 延迟 1 秒，等待托盘图标加载
+	time.Sleep(1 * time.Second)
+
+	if runtime.GOOS == "windows" {
+		// 使用 Windows 自带的 mshta 弹出一个原生的提示框
+		// 注意：这里不需要隐藏黑框，因为 mshta 本身就是无边框窗口
+		cmd := exec.Command("mshta", `javascript:alert('安全助手已成功启动！\n\n硬件环境采集服务正在后台运行，请返回网页继续操作。');close();`)
+		_ = cmd.Run()
+
+	} else if runtime.GOOS == "darwin" {
+		// macOS 同样使用 AppleScript 弹出原生弹窗
+		script := `display dialog "安全助手已成功启动！\n\n硬件环境采集服务正在后台运行，请返回网页继续操作。" buttons {"确定"} with title "西南联交所" with icon note`
+		runCmd("osascript", "-e", script)
+	}
 }
