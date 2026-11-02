@@ -1,7 +1,6 @@
 module hardware-collector
 
 go 1.27.3
-
 require github.com/getlantern/systray v1.2.2
 
 require (
